@@ -37,6 +37,14 @@ def who(f):
     un = f"@{f['username']}" if f.get("username") else "без username"
     return f"{name} ({un}), id {f.get('id')}"
 
+try:
+    api("setMyCommands", commands=json.dumps([
+        {"command": "zameny", "description": "Показать замены сейчас"},
+        {"command": "stop", "description": "Отписаться"},
+    ]))
+except Exception:
+    pass
+
 # ---------- читаем таблицу ----------
 try:
     page = get(BASE + "pubhtml")
@@ -117,8 +125,18 @@ for u in ups:
 
 reports = []
 for chat, (t, f) in last.items():
+    low = t.lower().split("@")[0]
+    if low in ("/zameny", "замены") and chat in D["users"]:
+        g0 = D["users"][chat]
+        if not ok:
+            send(chat, "Не удалось открыть таблицу, попробуйте позже.")
+        elif groups.get(g0):
+            send(chat, f"Замены {g0}\n\n" + "\n\n".join(groups[g0]))
+        else:
+            send(chat, f"Для группы {g0} замен сейчас нет.")
+        continue
     g = "" if t.startswith("/") else norm(t)
-    if t.lower().startswith("/stop"):
+    if low.startswith("/stop"):
         D["users"].pop(chat, None)
         D["hash"].pop(chat, None)
         send(chat, "Отписал. Чтобы вернуться, отправьте номер группы.")
@@ -134,8 +152,9 @@ for chat, (t, f) in last.items():
         what = "🔄 сменил группу на" if was else "➕ новый подписчик, группа"
         reports.append((chat, f"{what} {g}: {who(f)}"))
     elif chat in D["users"]:
-        send(chat, f"Вы подписаны на {D['users'][chat]}. Чтобы сменить группу, "
-                   "отправьте новый номер. Отписаться: /stop")
+        send(chat, f"Вы подписаны на {D['users'][chat]}. Замены придут сами, "
+                   "когда они изменятся. Показать сейчас: /zameny. "
+                   "Сменить группу: отправьте новый номер. Отписаться: /stop")
     else:
         send(chat, "Отправьте номер вашей группы, например 3П064. "
                    "Отписаться: /stop")
