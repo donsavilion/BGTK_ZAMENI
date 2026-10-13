@@ -16,6 +16,9 @@ def get(u):
 def norm(x):
     return re.sub(r"[\s\-]", "", x).upper()
 
+def one(c):
+    return re.sub(r"\s*\n\s*", ", ", c.strip())
+
 try:
     page = get(BASE + "pubhtml")
 except Exception:
@@ -24,31 +27,44 @@ gids = list(dict.fromkeys(
     re.findall(r"gid=(\d+)", page) + re.findall(r"sheet-button-(\d+)", page)
 )) or ["0"]
 
-lines, total, sample = [], 0, ""
+blocks, date = [], ""
 for gid in gids:
     try:
         data = get(BASE + f"pub?output=csv&gid={gid}")
     except Exception:
         continue
-    rows = list(csv.reader(io.StringIO(data)))
-    rows = [r for r in rows if any(c.strip() for c in r)]
-    total += len(rows)
-    if rows and not sample:
-        sample = "\n".join(" | ".join(c for c in r if c.strip())
-                           for r in rows[:25])
-    for r in rows:
-        if any(norm(GROUP) in norm(c) for c in r):
-            lines.append(" | ".join(c.strip() for c in r if c.strip()))
+    head = None
+    for r in csv.reader(io.StringIO(data)):
+        if not date:
+            m = re.search(r"\b\d{1,2}\.\d{2}\.(?:\d{4}|\d{2})\b", " ".join(r))
+            if m:
+                date = m.group(0)
+        if any(norm(c) == "ГРУППА" for c in r):
+            head = [(i, re.search(r"\d", c).group(0)) for i, c in enumerate(r)
+                    if re.match(r"\s*\d\s*пара", c, re.I)]
+            continue
+        if any(norm(c) == norm(GROUP) for c in r):
+            out = []
+            if head:
+                for k, (i, n) in enumerate(head):
+                    j = head[k + 1][0] if k + 1 < len(head) else len(r)
+                    cells = [one(c) for c in r[i:j] if c.strip()]
+                    if cells:
+                        s = f"{n} пара: {cells[0]}"
+                        if len(cells) > 1:
+                            s += f" (каб. {', '.join(cells[1:])})"
+                        out.append(s)
+            else:
+                out.append(" | ".join(one(c) for c in r if c.strip()))
+            blocks.append("\n".join(out))
 
-text = "\n".join(lines)
-if not text:
-    text = f"(не нашёл {GROUP}; вкладок: {len(gids)}, строк: {total})\n{sample}"
-text = text[:3500]
+text = "\n\n".join(b for b in blocks if b)
+if text:
+    text = f"Замены {GROUP}" + (f" на {date}" if date else "") + "\n" + text
 
 old = open("state.txt").read() if os.path.exists("state.txt") else ""
 h = hashlib.md5(text.encode()).hexdigest()
-if h != old:
-    data = urlencode({"chat_id": CHAT,
-                      "text": f"Замены {GROUP}:\n{text}"}).encode()
+if text and h != old:
+    data = urlencode({"chat_id": CHAT, "text": text[:3500]}).encode()
     urlopen(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data)
 open("state.txt", "w").write(h)
