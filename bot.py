@@ -32,6 +32,11 @@ def send(chat, text):
     except Exception as e:
         print("send failed", chat, e)
 
+def who(f):
+    name = " ".join(x for x in (f.get("first_name"), f.get("last_name")) if x)
+    un = f"@{f['username']}" if f.get("username") else "без username"
+    return f"{name} ({un}), id {f.get('id')}"
+
 # ---------- читаем таблицу ----------
 try:
     page = get(BASE + "pubhtml")
@@ -108,27 +113,37 @@ for u in ups:
     m = u.get("message") or {}
     chat = m.get("chat", {})
     if chat.get("type") == "private" and m.get("text"):
-        last[str(chat["id"])] = m["text"].strip()
+        last[str(chat["id"])] = (m["text"].strip(), m.get("from", {}))
 
-for chat, t in last.items():
+reports = []
+for chat, (t, f) in last.items():
     g = "" if t.startswith("/") else norm(t)
     if t.lower().startswith("/stop"):
         D["users"].pop(chat, None)
         D["hash"].pop(chat, None)
         send(chat, "Отписал. Чтобы вернуться, отправьте номер группы.")
+        reports.append((chat, f"➖ отписался: {who(f)}"))
     elif re.fullmatch(GRP, g):
+        was = D["users"].get(chat)
         D["users"][chat] = g
         D["hash"].pop(chat, None)
         msg = f"Готово! Буду присылать замены для {g}."
         if ok and not groups.get(g):
             msg += " Сейчас замен для этой группы нет, напишу, когда появятся."
         send(chat, msg)
+        what = "🔄 сменил группу на" if was else "➕ новый подписчик, группа"
+        reports.append((chat, f"{what} {g}: {who(f)}"))
     elif chat in D["users"]:
         send(chat, f"Вы подписаны на {D['users'][chat]}. Чтобы сменить группу, "
                    "отправьте новый номер. Отписаться: /stop")
     else:
         send(chat, "Отправьте номер вашей группы, например 3П064. "
                    "Отписаться: /stop")
+        reports.append((chat, f"👀 открыл бота: {who(f)}"))
+
+rep = "\n".join(txt for c, txt in reports if c != OWNER)
+if rep:
+    send(OWNER, rep)
 
 # ---------- рассылка ----------
 if ok:
