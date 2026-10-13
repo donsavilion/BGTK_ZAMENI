@@ -1,25 +1,38 @@
-import os, re, csv, io, hashlib
+import os, re, csv, io, json, hashlib
 from urllib.request import urlopen, Request
 from urllib.parse import urlencode
 
 BASE = ("https://docs.google.com/spreadsheets/d/e/"
         "2PACX-1vRgODzWJhSfml2SVezD2P4wdEyp92gZ7y3-tyjFssLI80j3CCTv7-"
         "cmJhcCsvQNKcPnzP-m2r9pswd8/")
-GROUP = "3П064"
 TOKEN = os.environ["TG_TOKEN"]
-CHAT = os.environ["TG_CHAT"]
+OWNER = os.environ["TG_CHAT"]
+API = f"https://api.telegram.org/bot{TOKEN}/"
 DATE = re.compile(r"\b\d{1,2}\.\d{2}\.(?:\d{4}|\d{2})\b")
+GRP = r"\d[А-Я]\d{3}"
+LAT = str.maketrans("ABCEHKMOPTX", "АВСЕНКМОРТХ")
 
 def get(u):
     req = Request(u, headers={"User-Agent": "Mozilla/5.0"})
     return urlopen(req, timeout=30).read().decode("utf-8")
 
 def norm(x):
-    return re.sub(r"[\s\-]", "", x).upper()
+    return re.sub(r"[\s\-]", "", x).upper().translate(LAT)
 
 def one(c):
     return re.sub(r"\s*\n\s*", ", ", c.strip())
 
+def api(method, **p):
+    return json.loads(urlopen(API + method, urlencode(p).encode(),
+                              timeout=30).read())
+
+def send(chat, text):
+    try:
+        api("sendMessage", chat_id=chat, text=text[:3500])
+    except Exception as e:
+        print("send failed", chat, e)
+
+# ---------- читаем таблицу ----------
 try:
     page = get(BASE + "pubhtml")
 except Exception:
@@ -28,16 +41,17 @@ gids = list(dict.fromkeys(
     re.findall(r"gid=(\d+)", page) + re.findall(r"sheet-button-(\d+)", page)
 )) or ["0"]
 
-blocks = []
+groups, ok = {}, False
 for gid in gids:
     try:
         data = get(BASE + f"pub?output=csv&gid={gid}")
     except Exception:
         continue
+    ok = True
     rows = list(csv.reader(io.StringIO(data)))
     m0 = DATE.search(" ".join(" ".join(r) for r in rows))
     first_date = m0.group(0) if m0 else ""
-    tables, head, k, prev_h = [], None, 0, -1
+    head, k, prev_h, label = None, 0, -1, ""
     for idx, r in enumerate(rows):
         if any(norm(c) == "ГРУППА" for c in r):
             k += 1
@@ -51,32 +65,79 @@ for gid in gids:
                 label = f"лист {gid}, таблица {k}"
             head = [(i, re.search(r"\d", c).group(0)) for i, c in enumerate(r)
                     if re.match(r"\s*\d\s*пара", c, re.I)]
-            tables.append([label, []])
             prev_h = idx
             continue
-        if tables and any(norm(c) == norm(GROUP) for c in r):
-            if head:
-                for q, (i, n) in enumerate(head):
-                    j = head[q + 1][0] if q + 1 < len(head) else len(r)
-                    cells = [one(c) for c in r[i:j] if c.strip()]
-                    if cells:
-                        s = f"{n} пара: {cells[0]}"
-                        if len(cells) > 1:
-                            s += f" (каб. {', '.join(cells[1:])})"
-                        tables[-1][1].append(s)
-            else:
-                tables[-1][1].append(" | ".join(one(c) for c in r if c.strip()))
-    for label, lines in tables:
+        if head is None:
+            continue
+        cell = next((c for c in r if c.strip()), "")
+        g = norm(cell)
+        if not re.fullmatch(GRP, g):
+            continue
+        lines = []
+        if head:
+            for q, (i, n) in enumerate(head):
+                j = head[q + 1][0] if q + 1 < len(head) else len(r)
+                cells = [one(c) for c in r[i:j] if c.strip()]
+                if cells:
+                    s = f"{n} пара: {cells[0]}"
+                    if len(cells) > 1:
+                        s += f" (каб. {', '.join(cells[1:])})"
+                    lines.append(s)
+        else:
+            lines.append(" | ".join(one(c) for c in r if c.strip()))
         if lines:
-            blocks.append(f"📅 {label}\n" + "\n".join(lines))
+            groups.setdefault(g, []).append(f"📅 {label}\n" + "\n".join(lines))
 
-text = ""
-if blocks:
-    text = f"Замены {GROUP}\n\n" + "\n\n".join(blocks)
+# ---------- данные подписчиков ----------
+D = json.load(open("data.json")) if os.path.exists("data.json") else {}
+D.setdefault("offset", 0)
+D.setdefault("users", {})
+D.setdefault("hash", {})
+if not D.get("seeded"):
+    D["users"].setdefault(OWNER, "3П064")
+    D["seeded"] = True
 
-old = open("state.txt").read() if os.path.exists("state.txt") else ""
-h = hashlib.md5(text.encode()).hexdigest()
-if text and h != old:
-    data = urlencode({"chat_id": CHAT, "text": text[:3500]}).encode()
-    urlopen(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data)
-open("state.txt", "w").write(h)
+# ---------- новые сообщения боту ----------
+try:
+    ups = api("getUpdates", offset=D["offset"], timeout=0)["result"]
+except Exception:
+    ups = []
+last = {}
+for u in ups:
+    D["offset"] = u["update_id"] + 1
+    m = u.get("message") or {}
+    chat = m.get("chat", {})
+    if chat.get("type") == "private" and m.get("text"):
+        last[str(chat["id"])] = m["text"].strip()
+
+for chat, t in last.items():
+    g = "" if t.startswith("/") else norm(t)
+    if t.lower().startswith("/stop"):
+        D["users"].pop(chat, None)
+        D["hash"].pop(chat, None)
+        send(chat, "Отписал. Чтобы вернуться, отправьте номер группы.")
+    elif re.fullmatch(GRP, g):
+        D["users"][chat] = g
+        D["hash"].pop(chat, None)
+        msg = f"Готово! Буду присылать замены для {g}."
+        if ok and not groups.get(g):
+            msg += " Сейчас замен для этой группы нет, напишу, когда появятся."
+        send(chat, msg)
+    elif chat in D["users"]:
+        send(chat, f"Вы подписаны на {D['users'][chat]}. Чтобы сменить группу, "
+                   "отправьте новый номер. Отписаться: /stop")
+    else:
+        send(chat, "Отправьте номер вашей группы, например 3П064. "
+                   "Отписаться: /stop")
+
+# ---------- рассылка ----------
+if ok:
+    for chat, g in list(D["users"].items()):
+        bl = groups.get(g)
+        text = f"Замены {g}\n\n" + "\n\n".join(bl) if bl else ""
+        h = hashlib.md5(text.encode()).hexdigest()
+        if text and h != D["hash"].get(chat):
+            send(chat, text)
+        D["hash"][chat] = h
+
+json.dump(D, open("data.json", "w"), ensure_ascii=False, indent=1)
