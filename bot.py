@@ -26,9 +26,12 @@ def api(method, **p):
     return json.loads(urlopen(API + method, urlencode(p).encode(),
                               timeout=30).read())
 
-def send(chat, text):
+def send(chat, text, markup=None):
+    p = {"chat_id": chat, "text": text[:3500]}
+    if markup:
+        p["reply_markup"] = markup
     try:
-        api("sendMessage", chat_id=chat, text=text[:3500])
+        api("sendMessage", **p)
     except Exception as e:
         print("send failed", chat, e)
 
@@ -39,6 +42,7 @@ def who(f):
 
 try:
     api("setMyCommands", commands=json.dumps([
+        {"command": "start", "description": "Выбрать группу"},
         {"command": "zameny", "description": "Показать замены сейчас"},
         {"command": "stop", "description": "Отписаться"},
     ]))
@@ -101,6 +105,22 @@ for gid in gids:
         if lines:
             groups.setdefault(g, []).append(f"📅 {label}\n" + "\n".join(lines))
 
+def keyboard():
+    gs = sorted(groups)[:96]
+    rows = [gs[i:i + 3] for i in range(0, len(gs), 3)]
+    return json.dumps({"inline_keyboard": [
+        [{"text": g, "callback_data": "g:" + g} for g in r] for r in rows
+    ]}, ensure_ascii=False)
+
+def ask(chat, cur=None):
+    if groups:
+        head = "Выберите вашу группу:"
+        if cur:
+            head += f"\n(сейчас вы подписаны на {cur})"
+        send(chat, head, keyboard())
+    else:
+        send(chat, "Отправьте номер вашей группы, например 3П064.")
+
 # ---------- данные подписчиков ----------
 D = json.load(open("data.json")) if os.path.exists("data.json") else {}
 D.setdefault("offset", 0)
@@ -118,6 +138,16 @@ except Exception:
 last = {}
 for u in ups:
     D["offset"] = u["update_id"] + 1
+    cq = u.get("callback_query")
+    if cq:
+        try:
+            api("answerCallbackQuery", callback_query_id=cq["id"])
+        except Exception:
+            pass
+        data = cq.get("data", "")
+        if data.startswith("g:") and cq.get("message"):
+            last[str(cq["message"]["chat"]["id"])] = (data[2:], cq.get("from", {}))
+        continue
     m = u.get("message") or {}
     chat = m.get("chat", {})
     if chat.get("type") == "private" and m.get("text"):
@@ -126,38 +156,40 @@ for u in ups:
 reports = []
 for chat, (t, f) in last.items():
     low = t.lower().split("@")[0]
-    if low in ("/zameny", "замены") and chat in D["users"]:
-        g0 = D["users"][chat]
+    cur = D["users"].get(chat)
+    if low in ("/zameny", "замены") and cur:
         if not ok:
             send(chat, "Не удалось открыть таблицу, попробуйте позже.")
-        elif groups.get(g0):
-            send(chat, f"Замены {g0}\n\n" + "\n\n".join(groups[g0]))
+        elif groups.get(cur):
+            send(chat, f"Замены {cur}\n\n" + "\n\n".join(groups[cur]))
         else:
-            send(chat, f"Для группы {g0} замен сейчас нет.")
+            send(chat, f"Для группы {cur} замен сейчас нет.")
+        continue
+    if low.startswith("/start"):
+        ask(chat, cur)
+        if not cur:
+            reports.append((chat, f"👀 открыл бота: {who(f)}"))
         continue
     g = "" if t.startswith("/") else norm(t)
     if low.startswith("/stop"):
         D["users"].pop(chat, None)
         D["hash"].pop(chat, None)
-        send(chat, "Отписал. Чтобы вернуться, отправьте номер группы.")
+        send(chat, "Отписал. Чтобы вернуться, нажмите /start.")
         reports.append((chat, f"➖ отписался: {who(f)}"))
     elif re.fullmatch(GRP, g):
-        was = D["users"].get(chat)
         D["users"][chat] = g
         D["hash"].pop(chat, None)
-        msg = f"Готово! Буду присылать замены для {g}."
+        msg = f"Готово! Группа {g}. Буду присылать замены, когда они меняются."
         if ok and not groups.get(g):
-            msg += " Сейчас замен для этой группы нет, напишу, когда появятся."
+            msg += " Сейчас замен для этой группы нет."
         send(chat, msg)
-        what = "🔄 сменил группу на" if was else "➕ новый подписчик, группа"
+        what = "🔄 сменил группу на" if cur else "➕ новый подписчик, группа"
         reports.append((chat, f"{what} {g}: {who(f)}"))
-    elif chat in D["users"]:
-        send(chat, f"Вы подписаны на {D['users'][chat]}. Замены придут сами, "
-                   "когда они изменятся. Показать сейчас: /zameny. "
-                   "Сменить группу: отправьте новый номер. Отписаться: /stop")
+    elif cur:
+        send(chat, f"Вы подписаны на {cur}. Показать замены сейчас: /zameny. "
+                   "Сменить группу: /start. Отписаться: /stop")
     else:
-        send(chat, "Отправьте номер вашей группы, например 3П064. "
-                   "Отписаться: /stop")
+        ask(chat)
         reports.append((chat, f"👀 открыл бота: {who(f)}"))
 
 rep = "\n".join(txt for c, txt in reports if c != OWNER)
