@@ -34,6 +34,10 @@ p = P(); p.feed(html)
 lines = [" | ".join(c for c in r if c) for r in p.rows
          if any(norm(GROUP) in norm(c) for c in r)]
 text = "\n".join(lines)
+if not text:
+    sample = "\n".join(" | ".join(c for c in r if c) for r in p.rows[:25])
+    text = f"(не нашёл {GROUP}; строк: {len(p.rows)})\n{sample}"[:3500]
+
 
 old = open("state.txt").read() if os.path.exists("state.txt") else ""
 h = hashlib.md5(text.encode()).hexdigest()
