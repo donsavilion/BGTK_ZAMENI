@@ -5,6 +5,8 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: bot
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -17,5 +19,5 @@ jobs:
       - run: |
           git config user.name bot
           git config user.email bot@example.com
-          git add state.txt
-          git diff --cached --quiet || (git commit -m state && git push)
+          git add data.json
+          git diff --cached --quiet || (git commit -m data && git push)
